@@ -1,0 +1,153 @@
+Index: opendb.go
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/opendb.go b/opendb.go
+--- a/opendb.go	
++++ b/opendb.go	(date 1653440119331)
+@@ -46,72 +46,7 @@
+ 	return db, nil
+ }
+ 
+-// Merge 合并数据文件，在rosedb当中是 Reclaim 方法
+-func (db *OpenDB) Merge() error {
+-	// 没有数据，忽略
+-	if db.dbFile.Offset == 0 {
+-		return nil
+-	}
+-
+-	var (
+-		validEntries []*logfile.Entry
+-		offset       int64
+-	)
+-
+-	// 读取原数据文件中的 Entry
+-	for {
+-		e, err := db.dbFile.Read(offset)
+-		if err != nil {
+-			if err == io.EOF {
+-				break
+-			}
+-			return err
+-		}
+-		// 内存中的索引状态是最新的，直接对比过滤出有效的 Entry
+-		if off, ok := db.indexes[string(e.Key)]; ok && off == offset {
+-			validEntries = append(validEntries, e)
+-		}
+-		offset += e.GetSize()
+-	}
+-
+-	if len(validEntries) > 0 {
+-		// 新建临时文件
+-		mergeDBFile, err := logfile.NewMergeDBFile(db.dirPath)
+-		if err != nil {
+-			return err
+-		}
+-		defer os.Remove(mergeDBFile.File.Name())
+ 
+-		// 重新写入有效的 entry
+-		for _, entry := range validEntries {
+-			writeOff := mergeDBFile.Offset
+-			err := mergeDBFile.Write(entry)
+-			if err != nil {
+-				return err
+-			}
+-
+-			// 更新索引
+-			db.indexes[string(entry.Key)] = writeOff
+-		}
+-
+-		// 获取文件名
+-		dbFileName := db.dbFile.File.Name()
+-		// 关闭文件
+-		db.dbFile.File.Close()
+-		// 删除旧的数据文件
+-		os.Remove(dbFileName)
+-
+-		// 获取文件名
+-		mergeDBFileName := mergeDBFile.File.Name()
+-		// 关闭文件
+-		mergeDBFile.File.Close()
+-		// 临时文件变更为新的数据文件
+-		os.Rename(mergeDBFileName, db.dirPath+string(os.PathSeparator)+logfile.FileName)
+-
+-		db.dbFile = mergeDBFile
+-	}
+-	return nil
+-}
+ 
+ // Put 写入数据
+ func (db *OpenDB) Put(key []byte, value []byte) (err error) {
+@@ -214,4 +149,70 @@
+ 		offset += e.GetSize()
+ 	}
+ 	return
++}
++// Merge 合并数据文件，在rosedb当中是 Reclaim 方法
++func (db *OpenDB) Merge() error {
++	// 没有数据，忽略
++	if db.dbFile.Offset == 0 {
++		return nil
++	}
++
++	var (
++		validEntries []*logfile.Entry
++		offset       int64
++	)
++
++	// 读取原数据文件中的 Entry
++	for {
++		e, err := db.dbFile.Read(offset)
++		if err != nil {
++			if err == io.EOF {
++				break
++			}
++			return err
++		}
++		// 内存中的索引状态是最新的，直接对比过滤出有效的 Entry
++		if off, ok := db.indexes[string(e.Key)]; ok && off == offset {
++			validEntries = append(validEntries, e)
++		}
++		offset += e.GetSize()
++	}
++
++	if len(validEntries) > 0 {
++		// 新建临时文件
++		mergeDBFile, err := logfile.NewMergeDBFile(db.dirPath)
++		if err != nil {
++			return err
++		}
++		defer os.Remove(mergeDBFile.File.Name())
++
++		// 重新写入有效的 entry
++		for _, entry := range validEntries {
++			writeOff := mergeDBFile.Offset
++			err := mergeDBFile.Write(entry)
++			if err != nil {
++				return err
++			}
++
++			// 更新索引
++			db.indexes[string(entry.Key)] = writeOff
++		}
++
++		// 获取文件名
++		dbFileName := db.dbFile.File.Name()
++		// 关闭文件
++		db.dbFile.File.Close()
++		// 删除旧的数据文件
++		os.Remove(dbFileName)
++
++		// 获取文件名
++		mergeDBFileName := mergeDBFile.File.Name()
++		// 关闭文件
++		mergeDBFile.File.Close()
++		// 临时文件变更为新的数据文件
++		os.Rename(mergeDBFileName, db.dirPath+string(os.PathSeparator)+logfile.FileName)
++
++		db.dbFile = mergeDBFile
++	}
++	return nil
+ }
+\ No newline at end of file

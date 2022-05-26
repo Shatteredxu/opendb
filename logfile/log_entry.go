@@ -1,104 +1,62 @@
 package logfile
 
-import (
-	"encoding/binary"
-	"hash/crc32"
-)
+import "encoding/binary"
 
-// MaxHeaderSize max entry header size.
-// crc32	typ    kSize	vSize	expiredAt
-//  4    +   1   +   5   +   5    +    10      = 25 (refer to binary.MaxVarintLen32 and binary.MaxVarintLen64)
-const MaxHeaderSize = 25
-
-// EntryType type of Entry.
-type EntryType byte
+const entryHeaderSize = 16
 
 const (
-	// TypeDelete represents entry type is delete.
-	TypeDelete EntryType = iota + 1
-	// TypeListMeta represents entry is list meta.
-	TypeListMeta
+	PUT uint16 = iota
+	DEL
 )
 
-// LogEntry is the data will be appended in log file.
-type LogEntry struct {
+// Entry 写入文件的记录
+type Entry struct {
 	Key       []byte
 	Value     []byte
-	ExpiredAt int64 // time.Unix
-	Type      EntryType
+	Extra     []byte
+	KeySize   uint32
+	ValueSize uint32
+	ExtraSize uint32
+	Mark      uint16 //对应的数据类型data type
+	Type      uint16 //operation mark.1字节
 }
 
-type entryHeader struct {
-	crc32     uint32 // check sum
-	typ       EntryType
-	kSize     uint32
-	vSize     uint32
-	expiredAt int64 // time.Unix
+func NewEntry(key, value, Extra []byte, mark, Type uint16) *Entry {
+	return &Entry{
+		Key:       key,
+		Value:     value,
+		Extra:     Extra,
+		KeySize:   uint32(len(key)),
+		ValueSize: uint32(len(value)),
+		ExtraSize: uint32(len(Extra)),
+		Mark:      mark,
+		Type:      Type,
+	}
+}
+func NewEntryNoExtra(key, value []byte,  mark ,Type uint16) *Entry {
+	return NewEntry(key, value, nil, Type, mark)
+}
+func (e *Entry) GetSize() int64 {
+	return int64(entryHeaderSize + e.KeySize + e.ValueSize + e.ExtraSize)
 }
 
-// EncodeEntry will encode entry into a byte slice.
-// The encoded Entry looks like:
-// +-------+--------+----------+------------+-----------+-------+---------+
-// |  crc  |  type  | key size | value size | expiresAt |  key  |  value  |
-// +-------+--------+----------+------------+-----------+-------+---------+
-// |------------------------HEADER----------------------|
-//         |--------------------------crc check---------------------------|
-/**
-编码为
- */
-func EncodeEntry(e *LogEntry) ([]byte, int) {
-	if e == nil {
-		return nil, 0
-	}
-	header := make([]byte, MaxHeaderSize)//MaxHeaderSize = 25
-	// encode header.
-	header[4] = byte(e.Type)
-	var index = 5
-	index += binary.PutVarint(header[index:], int64(len(e.Key)))
-	index += binary.PutVarint(header[index:], int64(len(e.Value)))
-	index += binary.PutVarint(header[index:], e.ExpiredAt)
-	//header为构造的头部，buf为构造一个完整的entry (header+key+value)
-	var size = index + len(e.Key) + len(e.Value)
-	buf := make([]byte, size)
-	copy(buf[:index], header[:])
-	// key and value.
-	copy(buf[index:], e.Key)
-	copy(buf[index+len(e.Key):], e.Value)
-
-	// crc32.
-	crc := crc32.ChecksumIEEE(buf[4:])//构建CRC
-	binary.LittleEndian.PutUint32(buf[:4], crc)
-	return buf, size
+// Encode 编码 Entry，返回字节数组
+func (e *Entry) Encode() ([]byte, error) {
+	buf := make([]byte, e.GetSize())
+	binary.BigEndian.PutUint32(buf[0:4], e.KeySize)
+	binary.BigEndian.PutUint32(buf[4:8], e.ValueSize)
+	binary.BigEndian.PutUint32(buf[8:12], e.ExtraSize)
+	binary.BigEndian.PutUint16(buf[12:14], e.Mark)
+	binary.BigEndian.PutUint16(buf[14:16], e.Type)
+	copy(buf[entryHeaderSize:entryHeaderSize+e.KeySize], e.Key)
+	copy(buf[entryHeaderSize+e.KeySize:], e.Value)
+	return buf, nil
 }
 
-func decodeHeader(buf []byte) (*entryHeader, int64) {
-	if len(buf) <= 4 {
-		return nil, 0
-	}
-	h := &entryHeader{
-		crc32: binary.LittleEndian.Uint32(buf[:4]),
-		typ:   EntryType(buf[4]),
-	}
-	var index = 5
-	ksize, n := binary.Varint(buf[index:])
-	h.kSize = uint32(ksize)
-	index += n
-
-	vsize, n := binary.Varint(buf[index:])
-	h.vSize = uint32(vsize)
-	index += n
-
-	expiredAt, n := binary.Varint(buf[index:])
-	h.expiredAt = expiredAt
-	return h, int64(index + n)
-}
-
-func getEntryCrc(e *LogEntry, h []byte) uint32 {
-	if e == nil {
-		return 0
-	}
-	crc := crc32.ChecksumIEEE(h[:])
-	crc = crc32.Update(crc, crc32.IEEETable, e.Key)
-	crc = crc32.Update(crc, crc32.IEEETable, e.Value)
-	return crc
+// 解码 buf 字节数组，返回 Entry
+func Decode(buf []byte) (*Entry, error) {
+	ks := binary.BigEndian.Uint32(buf[0:4])
+	vs := binary.BigEndian.Uint32(buf[4:8])
+	mark := binary.BigEndian.Uint16(buf[8:10])
+	return &Entry{KeySize: ks, ValueSize: vs, Mark: mark}, nil
 }

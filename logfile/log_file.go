@@ -1,219 +1,186 @@
 package logfile
 
 import (
-	"errors"
 	"fmt"
-	"hash/crc32"
-	"path/filepath"
-	"sync"
-	"sync/atomic"
-
-	"github.com/flower-corp/rosedb/ioselector"
+	"io/ioutil"
+	"os"
+	"sort"
+	"strconv"
+	"strings"
 )
 
+const FileName = "opendb.data"
+const MergeFileName = "opendb.data.merge"
+const mergeDir = "opendb_merge"
 var (
-	// ErrInvalidCrc invalid crc.
-	ErrInvalidCrc = errors.New("logfile: invalid crc")
-
-	// ErrWriteSizeNotEqual write size is not equal to entry size.
-	ErrWriteSizeNotEqual = errors.New("logfile: write size is not equal to entry size")
-
-	// ErrEndOfEntry end of entry in log file.
-	ErrEndOfEntry = errors.New("logfile: end of entry in log file")
-
-	// ErrUnsupportedIoType unsupported io type, only mmap and fileIO now.
-	ErrUnsupportedIoType = errors.New("unsupported io type")
-
-	// ErrUnsupportedLogFileType unsupported log file type, only WAL and ValueLog now.
-	ErrUnsupportedLogFileType = errors.New("unsupported log file type")
-)
-
-const (
-	// InitialLogFileId initial log file id: 0.
-	InitialLogFileId = 0
-
-	// FilePrefix log file prefix.
-	FilePrefix = "log."
-)
-
-// FileType represents different types of log file: wal and value log.
-type FileType int8
-
-const (
-	Strs FileType = iota
-	List
-	Hash
-	Sets
-	ZSet
-)
-
-var (
-	//定义了各种数据类型的对应的日志文件名称。
-	FileNamesMap = map[FileType]string{
-		Strs: "log.strs.",
-		List: "log.list.",
-		Hash: "log.hash.",
-		Sets: "log.sets.",
-		ZSet: "log.zset.",
-	}
-
-	// FileTypesMap name->type
-	FileTypesMap = map[string]FileType{
-		"strs": Strs,
-		"list": List,
-		"hash": Hash,
-		"sets": Sets,
-		"zset": ZSet,
+	DBFileSuffixName = []string{"str", "list", "hash", "set", "zset"}
+	DBFileFormatNames = map[uint16]string{
+		0: "%09d.data.str",
+		1: "%09d.data.list",
+		2: "%09d.data.hash",
+		3: "%09d.data.set",
+		4: "%09d.data.zset",
 	}
 )
 
-// IOType represents different types of file io: FileIO(standard file io) and MMap(Memory Map).
-type IOType int8
 
-//定义不同的IO方式
-const (
-	// FileIO standard file io.
-	FileIO IOType = iota
-	// MMap Memory Map.
-	MMap
-)
-
-// LogFile is an abstraction of a disk file, entry`s read and write will go through it.
-type LogFile struct {
-	sync.RWMutex
-	Fid        uint32//文件id
-	WriteAt    int64
-	IoSelector ioselector.IOSelector//
+// DBFile 数据文件定义
+type DBFile struct {
+	Id     uint32
+	Path   string
+	File   *os.File
+	Offset int64
 }
 
-/**
-	找到对应文件，对应类型，文件大小，选择对应的ioType类型，调用ioselector的写入方法
-	ioselector存放了对应FileIO和MMap对应方法
- */
-func OpenLogFile(path string, fid uint32, fsize int64, ftype FileType, ioType IOType) (lf *LogFile, err error) {
-	lf = &LogFile{Fid: fid}
-	fileName, err := lf.getLogFileName(path, fid, ftype)
+func newInternal(fileName string,fileId uint32) (*DBFile, error) {
+	file, err := os.OpenFile(fileName, os.O_CREATE|os.O_RDWR, 0644)
 	if err != nil {
 		return nil, err
 	}
 
-	var selector ioselector.IOSelector
-	switch ioType {
-	case FileIO:
-		if selector, err = ioselector.NewFileIOSelector(fileName, fsize); err != nil {
-			return
-		}
-	case MMap:
-		if selector, err = ioselector.NewMMapSelector(fileName, fsize); err != nil {
-			return
-		}
-	default:
-		return nil, ErrUnsupportedIoType
+	stat, err := os.Stat(fileName)
+	if err != nil {
+		return nil, err
+	}
+	return &DBFile{Id: fileId,Offset: stat.Size(), File: file}, nil
+}
+
+// NewDBFile 创建一个新的数据文件
+func NewDBFile(path string,fileId uint32,eType uint16) (*DBFile, error) {
+	//根据eType和fileId组成不同类型的文件名
+	fileName := path + string(os.PathSeparator) + fmt.Sprintf(DBFileFormatNames[eType], fileId)
+	return newInternal(fileName,fileId)
+}
+
+// NewMergeDBFile 新建一个合并时的数据文件
+func NewMergeDBFile(path string,id uint32) (*DBFile, error) {
+	fileName := path + string(os.PathSeparator) + MergeFileName
+	return newInternal(fileName,id)
+}
+
+// Read 从 offset 处开始读取
+func (df *DBFile) Read(offset int64) (e *Entry, err error) {
+	buf := make([]byte, entryHeaderSize)
+	if _, err = df.File.ReadAt(buf, offset); err != nil {
+		return
+	}
+	if e, err = Decode(buf); err != nil {
+		return
 	}
 
-	lf.IoSelector = selector
+	offset += entryHeaderSize
+	if e.KeySize > 0 {
+		key := make([]byte, e.KeySize)
+		if _, err = df.File.ReadAt(key, offset); err != nil {
+			return
+		}
+		e.Key = key
+	}
+
+	offset += int64(e.KeySize)
+	if e.ValueSize > 0 {
+		value := make([]byte, e.ValueSize)
+		if _, err = df.File.ReadAt(value, offset); err != nil {
+			return
+		}
+		e.Value = value
+	}
 	return
 }
 
-// ReadLogEntry read a LogEntry from log file at offset.
-// It returns a LogEntry, entry size and an error, if any.
-// If offset is invalid, the err is io.EOF.
-func (lf *LogFile) ReadLogEntry(offset int64) (*LogEntry, int64, error) {
-	// read entry header.
-	headerBuf, err := lf.readBytes(offset, MaxHeaderSize)
-	if err != nil {
-		return nil, 0, err
-	}
-	header, size := decodeHeader(headerBuf)
-	// the end of entries.
-	if header.crc32 == 0 && header.kSize == 0 && header.vSize == 0 {
-		return nil, 0, ErrEndOfEntry
-	}
-
-	e := &LogEntry{
-		ExpiredAt: header.expiredAt,
-		Type:      header.typ,
-	}
-	kSize, vSize := int64(header.kSize), int64(header.vSize)
-	var entrySize = size + kSize + vSize
-
-	// read entry key and value.
-	if kSize > 0 || vSize > 0 {
-		kvBuf, err := lf.readBytes(offset+size, kSize+vSize)
-		if err != nil {
-			return nil, 0, err
-		}
-		e.Key = kvBuf[:kSize]
-		e.Value = kvBuf[kSize:]
-	}
-
-	// crc32 check.
-	if crc := getEntryCrc(e, headerBuf[crc32.Size:size]); crc != header.crc32 {
-		return nil, 0, ErrInvalidCrc
-	}
-	return e, entrySize, nil
-}
-
-// Read a byte slice in the log file at offset, slice length is the given size.
-// It returns the byte slice and error, if any.
-func (lf *LogFile) Read(offset int64, size uint32) ([]byte, error) {
-	if size <= 0 {
-		return []byte{}, nil
-	}
-	buf := make([]byte, size)
-	if _, err := lf.IoSelector.Read(buf, offset); err != nil {
-		return nil, err
-	}
-	return buf, nil
-}
-
-// Write a byte slice at the end of log file.
-// Returns an error, if any.
-func (lf *LogFile) Write(buf []byte) error {
-	if len(buf) <= 0 {
-		return nil
-	}
-	offset := atomic.LoadInt64(&lf.WriteAt)
-	n, err := lf.IoSelector.Write(buf, offset)
+// Write 写入 Entry
+func (df *DBFile) Write(e *Entry) (err error) {
+	enc, err := e.Encode()
 	if err != nil {
 		return err
 	}
-	if n != len(buf) {
-		return ErrWriteSizeNotEqual
-	}
-
-	atomic.AddInt64(&lf.WriteAt, int64(n))
-	return nil
-}
-
-// Sync commits the current contents of the log file to stable storage.
-func (lf *LogFile) Sync() error {
-	return lf.IoSelector.Sync()
-}
-
-// Close current log file.
-func (lf *LogFile) Close() error {
-	return lf.IoSelector.Close()
-}
-
-// Delete delete current log file.
-// File can`t be retrieved if do this, so use it carefully.
-func (lf *LogFile) Delete() error {
-	return lf.IoSelector.Delete()
-}
-
-func (lf *LogFile) readBytes(offset, n int64) (buf []byte, err error) {
-	buf = make([]byte, n)
-	_, err = lf.IoSelector.Read(buf, offset)
+	_, err = df.File.WriteAt(enc, df.Offset)
+	df.Offset += e.GetSize()
 	return
 }
 
-func (lf *LogFile) getLogFileName(path string, fid uint32, ftype FileType) (name string, err error) {
-	if _, ok := FileNamesMap[ftype]; !ok {
-		return "", ErrUnsupportedLogFileType
+// 加载所有归档文件到磁盘中，method FileRWMethod,
+func Build(path string,  blockSize int64) (map[uint16]map[uint32]*DBFile, map[uint16]uint32, error) {
+	dir, err := ioutil.ReadDir(path)//从给定的目录中读取文件
+	if err != nil {
+		return nil, nil, err
 	}
 
-	fname := FileNamesMap[ftype] + fmt.Sprintf("%09d", fid)
-	name = filepath.Join(path, fname)
-	return
+	// build merged files if necessary.
+	// merge path is a sub directory in path.
+	var (
+		mergedFiles map[uint16]map[uint32]*DBFile
+		mErr        error
+	)
+	for _, d := range dir {
+		if d.IsDir() && strings.Contains(d.Name(), mergeDir) {
+			mergePath := path + string(os.PathSeparator) + d.Name()
+			if mergedFiles, _, mErr = Build(mergePath, blockSize); mErr != nil {
+				return nil, nil, mErr
+			}
+		}
+	}
+
+	fileIdsMap := make(map[uint16][]int)
+	for _, d := range dir {
+		if strings.Contains(d.Name(), ".data") {
+			splitNames := strings.Split(d.Name(), ".")
+			id, _ := strconv.Atoi(splitNames[0])
+
+			// find the different types of file.
+			switch splitNames[2] {
+			case DBFileSuffixName[0]:
+				fileIdsMap[0] = append(fileIdsMap[0], id)
+			case DBFileSuffixName[1]:
+				fileIdsMap[1] = append(fileIdsMap[1], id)
+			case DBFileSuffixName[2]:
+				fileIdsMap[2] = append(fileIdsMap[2], id)
+			case DBFileSuffixName[3]:
+				fileIdsMap[3] = append(fileIdsMap[3], id)
+			case DBFileSuffixName[4]:
+				fileIdsMap[4] = append(fileIdsMap[4], id)
+			}
+		}
+	}
+
+	// load all the db files.
+	activeFileIds := make(map[uint16]uint32)
+	archFiles := make(map[uint16]map[uint32]*DBFile)
+	var dataType uint16 = 0
+	for ; dataType < 5; dataType++ {
+		fileIDs := fileIdsMap[dataType]
+		sort.Ints(fileIDs)
+		files := make(map[uint32]*DBFile)
+		var activeFileId uint32 = 0
+		if len(fileIDs) > 0 {
+			activeFileId = uint32(fileIDs[len(fileIDs)-1])
+			length := len(fileIDs) - 1
+			if strings.Contains(path, mergeDir) {
+				length++
+			}
+			for i := 0; i < length; i++ {
+				id := fileIDs[i]
+
+				file, err := NewDBFile(path, uint32(id),  dataType)
+				if err != nil {
+					return nil, nil, err
+				}
+				files[uint32(id)] = file
+			}
+		}
+		archFiles[dataType] = files
+		activeFileIds[dataType] = activeFileId
+	}
+
+	// merged files are also archived files.
+	if mergedFiles != nil {
+		for dType, file := range archFiles {
+			if mergedFile, ok := mergedFiles[dType]; ok {
+				for id, f := range mergedFile {
+					file[id] = f
+				}
+			}
+		}
+	}
+	return archFiles, activeFileIds, nil
 }
