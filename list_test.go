@@ -1,18 +1,18 @@
 package opendb
 
 import (
-	"testing"
+"testing"
 )
 
+var key = "myhash"
 
-
-func TestRoseDB_HSet(t *testing.T) {
+func TestRoseDB_LPush(t *testing.T) {
 	opts := DefaultOptions("/tmp/opendb")
 	db, err := Open(opts)
 	if err != nil {
 		t.Error(err)
 	}
-	db.LPush([]byte(key), []byte("my_name"), []byte("opendb"))
+	db.HSet([]byte(key), []byte("my_name"), []byte("opendb1"))
 	getVal := func(key ,f []byte) {
 		val:= db.HGet(key,f)
 		if err != nil {
@@ -24,4 +24,3 @@ func TestRoseDB_HSet(t *testing.T) {
 
 	getVal([]byte(key), []byte("my_name"))
 }
-

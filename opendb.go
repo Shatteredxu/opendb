@@ -82,10 +82,10 @@ type (
 		expires         Expires       // 设定了过期的键列表集合
 		mu      sync.RWMutex
 		//strIndex        *StrIdx       // String indexes(a skip list).
-		//listIndex       *ListIdx      // List indexes.
+		listIndex       *ListIdx      // List indexes.
 		hashIndex       *HashIdx      // Hash indexes.
-		//setIndex        *SetIdx       // Set indexes.
-		//zsetIndex       *ZsetIdx      // Sorted set indexes.
+		setIndex        *SetIdx       // Set indexes.
+		zsetIndex       *ZsetIdx      // Sorted set indexes.
 
 	}
 	//map+map+dbfile 第一个map代表不同数据类型的归档文件，第二个代表归档文件的集合
@@ -125,10 +125,10 @@ func Open(opts Options) (*OpenDB, error) {
 		dirPath: opts.DBPath,
 		opts: opts,
 		//strIndex:   newStrIdx(),
-		//listIndex:  newListIdx(),
+		listIndex:  newListIdx(),
 		hashIndex:  newHashIdx(),
-		//setIndex:   newSetIdx(),
-		//zsetIndex:  newZsetIdx(),
+		setIndex:   newSetIdx(),
+		zsetIndex:  newZsetIdx(),
 	}
 
 	// 扫描文件，加载索引到内存。
@@ -268,7 +268,7 @@ func (db *OpenDB) getActiveFile(dType DataType) (file *logfile.DBFile, err error
 
 // load String、List、Hash、Set、ZSet indexes from db files.
 func (db *OpenDB) loadIdxFromFiles() error {
-	if db.archFiles == nil && db.activeFile == nil {
+ 	if db.archFiles == nil && db.activeFile == nil {
 		return nil
 	}
 
