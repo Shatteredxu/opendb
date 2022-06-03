@@ -21,7 +21,7 @@ type ZsetIdx struct {
 	indexes *zset.SortedSet
 }
 
-// create a new zset index.
+// 初始化zset索引，里面包含跳表和读写锁
 func newZsetIdx() *ZsetIdx {
 	return &ZsetIdx{indexes: zset.New(), mu: new(sync.RWMutex)}
 }
@@ -32,7 +32,7 @@ func (db *OpenDB) ZAdd(key []byte, score float64, member []byte) error {
 		return err
 	}
 
-	// if the score corresponding to the key and member already exist, nothing will be done.
+	// 如果(key score member)全部相同，则直接返回
 	if ok, oldScore := db.ZScore(key, member); ok && oldScore == score {
 		return nil
 	}

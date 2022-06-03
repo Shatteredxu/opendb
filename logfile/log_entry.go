@@ -18,7 +18,7 @@ type Entry struct {
 	ValueSize uint32
 	ExtraSize uint32
 	Mark      uint16 //对应的数据类型data type
-	Type      uint16 //operation mark.1字节
+	Type      uint16 //operation mark对应的操作.1字节
 }
 
 func NewEntry(key, value, Extra []byte, mark, Type uint16) *Entry {
@@ -40,6 +40,12 @@ func (e *Entry) GetSize() int64 {
 	return int64(entryHeaderSize + e.KeySize + e.ValueSize + e.ExtraSize)
 }
 
+func (e *Entry) GetMark() uint16 {
+	return uint16(e.Mark)
+}
+func (e *Entry) GetType() uint16 {
+	return uint16(e.Type)
+}
 // Encode 编码 Entry，返回字节数组
 func (e *Entry) Encode() ([]byte, error) {
 	buf := make([]byte, e.GetSize())
@@ -50,6 +56,9 @@ func (e *Entry) Encode() ([]byte, error) {
 	binary.BigEndian.PutUint16(buf[14:16], e.Type)
 	copy(buf[entryHeaderSize:entryHeaderSize+e.KeySize], e.Key)
 	copy(buf[entryHeaderSize+e.KeySize:], e.Value)
+	if e.ExtraSize > 0 {
+		copy(buf[(entryHeaderSize+e.KeySize+e.ValueSize):(entryHeaderSize+e.KeySize+e.ValueSize+e.ExtraSize)], e.Extra)
+	}
 	return buf, nil
 }
 
@@ -57,6 +66,8 @@ func (e *Entry) Encode() ([]byte, error) {
 func Decode(buf []byte) (*Entry, error) {
 	ks := binary.BigEndian.Uint32(buf[0:4])
 	vs := binary.BigEndian.Uint32(buf[4:8])
-	mark := binary.BigEndian.Uint16(buf[8:10])
-	return &Entry{KeySize: ks, ValueSize: vs, Mark: mark}, nil
+	es := binary.BigEndian.Uint32(buf[8:12])
+	mark := binary.BigEndian.Uint16(buf[12:14])
+	Type := binary.BigEndian.Uint16(buf[14:16])
+	return &Entry{KeySize: ks, ValueSize: vs,ExtraSize: es,Mark: mark,Type: Type}, nil
 }

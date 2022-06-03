@@ -22,7 +22,7 @@ const (
 // Options for opening a db.
 type Options struct {
 	DBPath string
-	IndexMode DataIndexMode
+	IdxMode DataIndexMode
 	IoType IOType
 	Sync bool
 	LogFileGCInterval time.Duration
@@ -34,7 +34,7 @@ type Options struct {
 func DefaultOptions(path string) Options {
 	return Options{
 		DBPath:               path,
-		IndexMode:            KeyOnlyMemMode,
+		IdxMode:            KeyOnlyMemMode,
 		IoType:               MMap,
 		Sync:                 false,
 		LogFileGCInterval:    time.Hour * 8,

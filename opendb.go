@@ -81,7 +81,7 @@ type (
 		archFiles       ArchivedFiles // map+map+dbfile
 		expires         Expires       // 设定了过期的键列表集合
 		mu      sync.RWMutex
-		//strIndex        *StrIdx       // String indexes(a skip list).
+		strIndex        *StrIdx       // String indexes(a skip list).
 		listIndex       *ListIdx      // List indexes.
 		hashIndex       *HashIdx      // Hash indexes.
 		setIndex        *SetIdx       // Set indexes.
@@ -138,81 +138,81 @@ func Open(opts Options) (*OpenDB, error) {
 
 
 
-// Put 写入数据
-func (db *OpenDB) Put(key []byte, value []byte) (err error) {
-	if len(key) == 0 {
-		return
-	}
-
-	db.mu.Lock()
-	defer db.mu.Unlock()
-
-
-	// 封装成 Entry
-	entry := logfile.NewEntryNoExtra(key, value, String,StringSet)
-	// 追加到数据文件当中
-	err = db.store(entry)//0暂时代表写入str文件
-	// 写到内存
-	activeFile, err :=db.getActiveFile(0)
-	db.indexes[string(key)] = activeFile.Offset-entry.GetSize()
-	return
-}
-
-// Get 取出数据
-func (db *OpenDB) Get(key []byte) (val []byte, err error) {
-	if len(key) == 0 {
-		return
-	}
-
-	db.mu.RLock()
-	defer db.mu.RUnlock()
-
-	// 从内存当中取出索引信息
-	offset, ok := db.indexes[string(key)]
-	// key 不存在
-	if !ok {
-		return
-	}
-
-	// 从磁盘中读取数据
-	var e *logfile.Entry
-	activeFile, err :=db.getActiveFile(0)
-	e, err = activeFile.Read(offset)
-	if err != nil && err != io.EOF {
-		return
-	}
-	if e != nil {
-		val = e.Value
-	}
-	return
-}
-
-// Del 删除数据
-func (db *OpenDB) Del(key []byte) (err error) {
-	if len(key) == 0 {
-		return
-	}
-
-	db.mu.Lock()
-	defer db.mu.Unlock()
-	// 从内存当中取出索引信息
-	_, ok := db.indexes[string(key)]
-	// key 不存在，忽略
-	if !ok {
-		return
-	}
-
-	// 封装成 Entry 并写入
-	e := logfile.NewEntry(key, nil,nil ,String,StringRem)
-	err = db.dbFile.Write(e)
-	if err != nil {
-		return
-	}
-
-	// 删除内存中的 key
-	delete(db.indexes, string(key))
-	return
-}
+//// Put 写入数据
+//func (db *OpenDB) Put(key []byte, value []byte) (err error) {
+//	if len(key) == 0 {
+//		return
+//	}
+//
+//	db.mu.Lock()
+//	defer db.mu.Unlock()
+//
+//
+//	// 封装成 Entry
+//	entry := logfile.NewEntryNoExtra(key, value, String,StringSet)
+//	// 追加到数据文件当中
+//	err = db.store(entry)//0暂时代表写入str文件
+//	// 写到内存
+//	activeFile, err :=db.getActiveFile(0)
+//	db.indexes[string(key)] = activeFile.Offset-entry.GetSize()
+//	return
+//}
+//
+//// Get 取出数据
+//func (db *OpenDB) Get(key []byte) (val []byte, err error) {
+//	if len(key) == 0 {
+//		return
+//	}
+//
+//	db.mu.RLock()
+//	defer db.mu.RUnlock()
+//
+//	// 从内存当中取出索引信息
+//	offset, ok := db.indexes[string(key)]
+//	// key 不存在
+//	if !ok {
+//		return
+//	}
+//
+//	// 从磁盘中读取数据
+//	var e *logfile.Entry
+//	activeFile, err :=db.getActiveFile(0)
+//	e, err = activeFile.Read(offset)
+//	if err != nil && err != io.EOF {
+//		return
+//	}
+//	if e != nil {
+//		val = e.Value
+//	}
+//	return
+//}
+//
+//// Del 删除数据
+//func (db *OpenDB) Del(key []byte) (err error) {
+//	if len(key) == 0 {
+//		return
+//	}
+//
+//	db.mu.Lock()
+//	defer db.mu.Unlock()
+//	// 从内存当中取出索引信息
+//	_, ok := db.indexes[string(key)]
+//	// key 不存在，忽略
+//	if !ok {
+//		return
+//	}
+//
+//	// 封装成 Entry 并写入
+//	e := logfile.NewEntry(key, nil,nil ,String,StringRem)
+//	err = db.dbFile.Write(e)
+//	if err != nil {
+//		return
+//	}
+//
+//	// 删除内存中的 key
+//	delete(db.indexes, string(key))
+//	return
+//}
 //将entry写入活跃文件中
 func (db *OpenDB) store(e *logfile.Entry) error {
 	// sync the db file if file size is not enough, and open a new db file.
@@ -277,7 +277,6 @@ func (db *OpenDB) loadIdxFromFiles() error {
 	for dataType := 0; dataType < DataStructureNum; dataType++ {
 		//go func(dType uint16) {
 		//	defer wg.Done()
-
 			// archived files
 			var fileIds []int
 			dbFile := make(map[uint32]*logfile.DBFile)
@@ -288,7 +287,7 @@ func (db *OpenDB) loadIdxFromFiles() error {
 				fileIds = append(fileIds, int(k))
 			}
 
-			// active file
+			// active file返回id，代表这个类型活跃文件的id
 			activeFile, err := db.getActiveFile(uint16(dataType))
 			if err != nil {
 				log.Fatalf("active file is nil, the db can not open.[%+v]", err)
@@ -306,23 +305,22 @@ func (db *OpenDB) loadIdxFromFiles() error {
 
 				for offset <= db.opts.DefaultBlockSize {
 					if e, err := df.Read(offset); err == nil {
-						// 设置索引状态
-						db.indexes[string(e.Key)] = offset
-						if e.Mark == logfile.DEL {
-							// 删除内存中的 key
-							delete(db.indexes, string(e.Key))
+						// 设置索引状态，最初的版本，只有Stringindex，也就是字符串类型时候，
+						idx := &Index{
+							FileId: fid,
+							Offset: offset,
 						}
-						offset += e.GetSize()
-						//if len(e.Meta.Key) > 0 {
-						//	if err := db.buildIndex(e, idx, true); err != nil {
-						//		log.Fatalf("a fatal err occurred, the db can not open.[%+v]", err)
-						//	}
-						//
-						//	// save active tx ids.
-						//	if i == len(fileIds)-1 && e.TxId != 0 {
-						//		db.txnMeta.ActiveTxIds.Store(e.TxId, struct{}{})
-						//	}
-						//}
+						idx.Meta.Key = e.Key
+						idx.Meta.Value = e.Value
+						idx.Meta.Extra = e.Extra
+						offset += int64(e.GetSize())
+						e.Mark = uint16(dataType);
+						//当有多个索引的时候，在加载时就需要对应不同类型的索引进行加载
+						if len(e.Key) > 0 {
+							if err := db.buildIndex(e, idx, true); err != nil {
+								log.Fatalf("a fatal err occurred, the db can not open.[%+v]", err)
+							}
+						}
 					} else {
 						if err == io.EOF {
 							break
@@ -426,5 +424,37 @@ func (db *OpenDB) checkKeyValue(key []byte, value ...[]byte) error {
 // TODO 对键值对进行过期检查
 func (db *OpenDB) checkExpired(key []byte, dType DataType) (expired bool) {
 
+	return
+}
+// build the indexes for different data structures.
+func (db *OpenDB) buildIndex(entry *logfile.Entry, idx *Index, isOpen bool) (err error) {
+	//设置Index的存储模式
+	//if db.opts.IdxMode == KeyValueMemMode && entry.GetType() == String {
+	//	idx.Meta.Value = entry.Meta.Value
+	//	idx.Meta.ValueSize = uint32(len(entry.Meta.Value))
+	//}
+
+
+	switch entry.GetMark() {
+	case String:
+		db.buildStringIndex(idx, entry)
+	case List:
+		db.buildListIndex(entry)
+	case Hash:
+		db.buildHashIndex(entry)
+	case Set:
+		db.buildSetIndex(entry)
+	case ZSet:
+		db.buildZsetIndex(entry)
+	}
+	return
+}
+func (db *OpenDB) encode(key, value interface{}) (encKey, encVal []byte, err error) {
+	if encKey, err = util.EncodeKey(key); err != nil {
+		return
+	}
+	if encVal, err = util.EncodeValue(value); err != nil {
+		return
+	}
 	return
 }

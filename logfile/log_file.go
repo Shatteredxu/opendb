@@ -85,6 +85,15 @@ func (df *DBFile) Read(offset int64) (e *Entry, err error) {
 		}
 		e.Value = value
 	}
+	// read extra info if necessary.
+	offset += int64(e.ValueSize)
+	if e.ExtraSize > 0 {
+		extra := make([]byte, e.ExtraSize)
+		if _, err = df.File.ReadAt(extra, offset); err != nil {
+			return
+		}
+		e.Extra = extra
+	}
 	return
 }
 
